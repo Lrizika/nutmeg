@@ -3,3 +3,6 @@
 *.code-workspace
 *.sublime-workspace
 *.sublime-project
+.vscode/*
+*.log
+python/testuser-password
