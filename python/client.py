@@ -6,6 +6,10 @@ import curses
 
 import logging
 
+
+#
+# Utility Functions
+#
 def tsToDt(timestamp: str) -> str:
 	"""
 	Convert a timestamp string to a human-readable string.
@@ -22,9 +26,6 @@ def tsToDt(timestamp: str) -> str:
 		return(dt.strftime('%H:%M:%S'))
 	return(dt.strftime('%Y-%m-%d'))
 	#return(dt.strftime('%Y-%m-%d %H:%M:%S'))
-	
-
-
 
 def getEvent(room, eventId):
 	for event in room.events:
@@ -43,6 +44,7 @@ def getUser(room, userId):
 			{'userId': str(userId),
 			'roomName': str(room.display_name),
 			'roomId': str(room.room_id)})
+
 
 class OutgoingText:
 	"""
@@ -89,15 +91,16 @@ class EventManager:
 		self.handled = []
 
 	def handleEvent(self, room, event):
-		logging.info(event['event_id'])
 		if event['event_id'] not in self.handled:
-			logging.info(event)
+			logging.info('Handling event: '+event['event_id'])
 			if event['type'] == 'm.room.message': 
 				self.handleMessage(room, event)
 			else:
 				logging.error('Unknown event type: %(type)s' %
 					{'type': str(event['type'])})
 			self.handled.append(event['event_id'])
+		else:
+			logging.info('Already handled event: '+event['event_id'])
 
 	def handleMessage(self, room, event):
 		self.displayManager.messageDisplay.printMessage(room, event)
@@ -107,6 +110,8 @@ class DisplayManager:
 		self.screen = screen
 		self.height, self.width = screen.getmaxyx()
 		self.currentRoom = None
+
+		# TODO: Change new windows into new pads
 		self.messageQueue = MessageQueue()
 		self.statusScreen = curses.newwin(1,self.width,0,0)
 		self.statusDisplay = StatusDisplay(self.statusScreen)
@@ -128,24 +133,33 @@ class StatusDisplay:
 		self.height, self.width = screen.getmaxyx()
 
 	def printStatus(self, status):
+		logging.info('Status: '+status)
 		self.screen.clear()
 		self.screen.addstr(0,0,status)
 		self.screen.refresh()
 	
 	def printRoomHeader(self, room):
-		status = ('%(userId)s - %(roomName)s - %(topic)s' %
-			{'userId': str(room.client.user_id),
+		status = ('%(user)s - %(roomName)s - %(topic)s' %
+			{'user': str(getUser(room, room.client.user_id).get_display_name()),
 			'roomName': str(room.display_name),
 			'topic': str(room.topic)})
 		self.printStatus(status)
 
-	def printLoadingInitial(self):
-		status = 'Loading Nutmeg...'
+	def printConnecting(self, server):
+		status = ('Connecting to homeserver %(homeserver)s...' %
+			{'homeserver': str(server)})
 		self.printStatus(status)
 
-	def printConnecting(self, server):
-		status = ('Connecting to homeserver %(homeserver)s' %
-			{'homeserver': str(server)})
+	def printLoggingIn(self, username, server):
+		status = ('Logging in as %(username)s on %(homeServer)s...' % 
+			{'username': str(username),
+			'homeServer': server})
+		self.printStatus(status)
+
+	def printJoining(self, room, server):
+		status = ('Joining #%(roomName)s:%(homeServer)s...' % 
+			{'roomName': room,
+			'homeServer': server})
 		self.printStatus(status)
 
 class MessageDisplay:
@@ -186,27 +200,31 @@ class MessageDisplay:
 
 
 logging.basicConfig(filename='nutmeg.log',level=logging.INFO)
-with open('testuser-password', 'r') as passFile:
-	PASSWORD = passFile.read().strip()
-HOMESERVER = 'matrix.lrizika.com'
-USERNAME = 'testuser'
-ROOMNAME = 'test2'
 
 def main(stdscr):
+	displayManager = DisplayManager(stdscr)
 	# Clear screen
 	stdscr.clear()
-	stdscr.addstr(0,0,'Loading Nutmeg...')
+	displayManager.statusDisplay.printStatus('Loading Nutmeg...')
 	stdscr.refresh()
 
-	displayManager = DisplayManager(stdscr)
+	with open('testuser-password', 'r') as passFile:
+		PASSWORD = passFile.read().strip()
+	HOMESERVER = 'matrix.lrizika.com'
+	USERNAME = 'testuser'
+	ROOMNAME = 'test2'
+
 	displayManager.statusDisplay.printConnecting(HOMESERVER)
 
 	client = MatrixClient('https://%(homeServer)s' %
 		{'homeServer': HOMESERVER})
 
+	displayManager.statusDisplay.printLoggingIn(USERNAME, HOMESERVER)
+
 	# Existing user
 	token = client.login_with_password(username=USERNAME, password=PASSWORD)
 
+	displayManager.statusDisplay.printJoining(ROOMNAME, HOMESERVER)
 	room = client.join_room('#%(roomName)s:%(homeServer)s' % 
 		{'roomName': ROOMNAME,
 		'homeServer': HOMESERVER})
