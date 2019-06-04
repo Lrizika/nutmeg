@@ -1,23 +1,29 @@
 #!/usr/bin/python36
 
 from matrix_client.client import MatrixClient
-from datetime import datetime
+import datetime
 import curses
 
 import logging
 
 def tsToDt(timestamp: str) -> str:
 	"""
-	Convert a timestamp string to a human-readable datetime string.
-	Courtesy of https://github.com/wklaebe/redpill/blob/master/redpill.py
+	Convert a timestamp string to a human-readable string.
+	Returns timestamps from today as H:M:S, and earlier as Y-M-D
 	
 	Arguments:
 		timestamp {str} -- Unix-style timestamp
 	
 	Returns:
-		str -- Y-M-D H:M:S
+		str -- Y-M-D or H:M:S
 	"""
-	return(datetime.fromtimestamp(int(timestamp)/1000).strftime('%Y-%m-%d %H:%M:%S'))
+	dt = datetime.datetime.fromtimestamp(int(timestamp)/1000)
+	if abs(datetime.datetime.today()-dt) < datetime.timedelta(1):
+		return(dt.strftime('%H:%M:%S'))
+	return(dt.strftime('%Y-%m-%d'))
+	#return(dt.strftime('%Y-%m-%d %H:%M:%S'))
+	
+
 
 
 def getEvent(room, eventId):
@@ -27,6 +33,16 @@ def getEvent(room, eventId):
 	else:
 		raise IndexError('Event %(eventId)s not found. Do you need to call room.backfill_previous_messages?' %
 			{'eventId': str(eventId)})
+
+def getUser(room, userId):
+	for member in room.get_joined_members():
+		if member.user_id == userId:
+			return(member)
+	else:
+		raise IndexError('User %(userId)s not found in room %(roomName)s (%(roomId)s).' %
+			{'userId': str(userId),
+			'roomName': str(room.display_name),
+			'roomId': str(room.room_id)})
 
 class OutgoingText:
 	"""
@@ -78,28 +94,65 @@ class EventManager:
 			logging.info(event)
 			if event['type'] == 'm.room.message': 
 				self.handleMessage(room, event)
-			else: 
-				raise TypeError('Unknown event type: %(type)s' %
+			else:
+				logging.error('Unknown event type: %(type)s' %
 					{'type': str(event['type'])})
 			self.handled.append(event['event_id'])
 
 	def handleMessage(self, room, event):
-		self.displayManager.printMessage(room, event)
+		self.displayManager.messageDisplay.printMessage(room, event)
 		
-
-
 class DisplayManager:
 	def __init__(self, screen, startRoom = None):
 		self.screen = screen
 		self.height, self.width = screen.getmaxyx()
-		self.currentRoom = startRoom
-		if startRoom is not None: rooms = [startRoom]
-		else: rooms = None
-		self.messageQueue = MessageQueue(rooms)
+		self.currentRoom = None
+		self.messageQueue = MessageQueue()
+		self.statusScreen = curses.newwin(1,self.width,0,0)
+		self.statusDisplay = StatusDisplay(self.statusScreen)
+		self.messageScreen = curses.newwin(self.height-2,self.width,1,0)
+		self.messageDisplay = MessageDisplay(self.messageScreen, self.messageQueue)
+		if startRoom is not None: self.changeRoom(startRoom)
 		
 	def changeRoom(self, room):
 		self.currentRoom = room
 		self.messageQueue.addRoom(room)
+		self.currentRoom.update_room_name()
+		self.currentRoom.update_room_topic()
+		self.currentRoom.update_aliases()
+		self.statusDisplay.printRoomHeader(room)
+
+class StatusDisplay:
+	def __init__(self, screen):
+		self.screen = screen
+		self.height, self.width = screen.getmaxyx()
+
+	def printStatus(self, status):
+		self.screen.clear()
+		self.screen.addstr(0,0,status)
+		self.screen.refresh()
+	
+	def printRoomHeader(self, room):
+		status = ('%(userId)s - %(roomName)s - %(topic)s' %
+			{'userId': str(room.client.user_id),
+			'roomName': str(room.display_name),
+			'topic': str(room.topic)})
+		self.printStatus(status)
+
+	def printLoadingInitial(self):
+		status = 'Loading Nutmeg...'
+		self.printStatus(status)
+
+	def printConnecting(self, server):
+		status = ('Connecting to homeserver %(homeserver)s' %
+			{'homeserver': str(server)})
+		self.printStatus(status)
+
+class MessageDisplay:
+	def __init__(self, screen, messageQueue):
+		self.screen = screen
+		self.height, self.width = screen.getmaxyx()
+		self.messageQueue = messageQueue
 		
 	def printMessage(self, room, event):
 		self.queueMessage(room, event)
@@ -108,7 +161,7 @@ class DisplayManager:
 	def printQueue(self, room):
 		self.screen.clear()
 		y=0
-		for message in self.messageQueue.get(room, count=self.height-1):
+		for message in self.messageQueue.get(room, count=self.height):
 			self.screen.addstr(y, 0, message)
 			y+=1
 		self.screen.refresh()
@@ -117,7 +170,7 @@ class DisplayManager:
 		if event['content']['msgtype'] == 'm.text':
 			message = ('%(timestamp)s - %(sender)s: %(message)s' %
 				{'timestamp': tsToDt(str(event['origin_server_ts'])),
-				'sender': str(event['sender']),
+				'sender': str(getUser(room, event['sender']).get_display_name()),
 				'message': str(event['content']['body'])})
 			self.messageQueue.put(room, message)
 			#self.screen.clear()
@@ -142,6 +195,11 @@ ROOMNAME = 'test2'
 def main(stdscr):
 	# Clear screen
 	stdscr.clear()
+	stdscr.addstr(0,0,'Loading Nutmeg...')
+	stdscr.refresh()
+
+	displayManager = DisplayManager(stdscr)
+	displayManager.statusDisplay.printConnecting(HOMESERVER)
 
 	client = MatrixClient('https://%(homeServer)s' %
 		{'homeServer': HOMESERVER})
@@ -153,10 +211,11 @@ def main(stdscr):
 		{'roomName': ROOMNAME,
 		'homeServer': HOMESERVER})
 	#room.add_listener(print)
-	displayManager = DisplayManager(stdscr, startRoom=room)
+	displayManager.changeRoom(room)
+	#displayManager = DisplayManager(stdscr, startRoom=room)
 	eventManager = EventManager(displayManager)
 	room.add_listener(eventManager.handleEvent)
-	room.backfill_previous_messages(limit=displayManager.height) #TODO: Have this backfill up to max height
+	room.backfill_previous_messages(limit=displayManager.messageDisplay.height+2)
 
 	try:
 		OutgoingText('Hallo!', room, eventManager.handleEvent, backfill=3)
