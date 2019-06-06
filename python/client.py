@@ -64,6 +64,45 @@ def getLastChar(window) -> tuple:
 				return(y,x)
 	raise IndexError('No filled characters in window.')
 
+def stripAutoNewlines(text: str, interval: int) -> str:
+	"""
+	Removes newlines that are automatically added by Textpads on linewrap
+	
+	Arguments:
+		text {[type]} -- [description]
+		interval {[type]} -- [description]
+	"""
+
+	i = interval
+	newText = ''
+	while i<len(text) and text[i] == '\n':
+		newText += text[i-interval:i]
+		i += interval + 1
+	newText += text[i-interval:]
+	return(newText)
+
+
+#class PadBox(curses.textpad.Textbox):
+	# """
+	# Variant Textbox that supports using a pad for the window.
+	# """
+	# def edit(self, pminrow, pmincol, sminrow, smincol, smaxrow, smaxcol, validate=None):
+	# 	"""
+	# 	Edit in the widget window and collect the results.
+
+	# 	Arguments:
+	# 		pminrow, pmincol, sminrow, smincol, smaxrow, smaxcol -- See curses.window.refresh
+	# 	"""
+	# 	while 1:
+	# 		ch = self.win.getch()
+	# 		if validate:
+	# 			ch = validate(ch)
+	# 		if not ch:
+	# 			continue
+	# 		if not self.do_command(ch):
+	# 			break
+	# 		self.win.refresh(pminrow, pmincol, sminrow, smincol, smaxrow, smaxcol)
+	# 	return self.gather()
 
 
 class OutgoingText:
@@ -117,17 +156,23 @@ class DisplayManager:
 		# TODO: Change new windows into new pads
 		#self.messageQueue = MessageQueue()
 		statusY = 0
+		statusHeight = 1
 		statusX = 0
-		self.statusScreen = curses.newwin(1,self.width,statusY,statusX)
+		statusWidth = self.width - statusX
+		self.statusScreen = curses.newwin(statusHeight,statusWidth,statusY,statusX)
 		self.statusDisplay = StatusDisplay(self.statusScreen, statusY, statusX)
-		messageY = 1
-		messageX = 10
-		self.messageScreen = curses.newwin(self.height-messageY-1,self.width-messageX, messageY, messageX)
-		self.messageDisplay = MessageDisplay(self.messageScreen, messageY, messageX)#, self.messageQueue)
-		inputY = self.height-1
+		inputHeight = 4
+		inputY = self.height-inputHeight
 		inputX = 0
-		self.inputScreen = curses.newwin(self.height-inputY,self.width-inputX, inputY, inputX)
+		inputWidth = self.width - inputX
+		self.inputScreen = curses.newwin(inputHeight, inputWidth, inputY, inputX)
 		self.inputBox = InputBox(self.inputScreen, inputY, inputX)
+		messageY = statusHeight + statusY
+		messageHeight = self.height - messageY - inputHeight
+		messageX = 10
+		messageWidth = self.width - messageX
+		self.messageScreen = curses.newwin(messageHeight, messageWidth, messageY, messageX)
+		self.messageDisplay = MessageDisplay(self.messageScreen, messageY, messageX)#, self.messageQueue)
 		if startRoom is not None: self.changeRoom(startRoom)
 		
 	def changeRoom(self, room):
@@ -144,7 +189,21 @@ class InputBox:
 		self.y = y
 		self.x = x
 		self.height, self.width = screen.getmaxyx()
+		#self.textpad = curses.newpad(16, self.width)
 		self.textbox = textpad.Textbox(self.screen, insert_mode=True)
+
+	def clear(self):
+		self.screen.clear()
+		self.screen.refresh()
+
+	@property
+	def cursorIsAtTop(self):
+		y, x = curses.getsyx()
+		return(y == self.y)
+	@property
+	def cursorIsAtBottom(self):
+		y, x = curses.getsyx()
+		return(y == self.y+self.height-1)
 
 class StatusDisplay:
 	def __init__(self, screen, y, x):
@@ -156,7 +215,7 @@ class StatusDisplay:
 	def printStatus(self, status):
 		logging.info('Status: '+status)
 		self.screen.clear()
-		self.screen.addstr(0,0,status)
+		self.screen.addstr(0,0,status,curses.color_pair(1))
 		self.screen.refresh()
 	
 	def printRoomHeader(self, room):
@@ -232,6 +291,8 @@ class Message:
 	def build(self):
 		if self.event['content']['msgtype'] == 'm.text':
 			self.buildText()
+		elif self.event['content']['msgtype'] == 'm.emote':
+			self.buildEmote()
 		else:
 			logging.warning('Unknown event content msgtype "%(msgtype)s" while building message for event: %(event)s' %
 				{'msgtype': str(self.event['content']['msgtype']),
@@ -239,11 +300,23 @@ class Message:
 			self.buildBroken()
 
 	def buildText(self):
-		message = ('%(timestamp)s - %(sender)s: %(message)s' %
-			{'timestamp': tsToDt(str(self.event['origin_server_ts'])),
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(sender)s: %(message)s' %
+			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'message': str(self.event['content']['body'])})
-		self.pad.addstr(0,0,message)
+		self.pad.addstr(0,0,message,curses.A_NORMAL)
+		self.pad.addstr(0,0,timestamp,curses.color_pair(1)) # Just overwrite the timestamp with the dim version
+		logging.info('Built message: '+message)
+
+	def buildEmote(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(sender)s %(message)s' %
+			{'timestamp': timestamp,
+			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
+			'message': str(self.event['content']['body'])})
+		self.pad.addstr(0,0,message,curses.A_BOLD)
+		self.pad.addstr(0,0,timestamp,curses.color_pair(1)) # Just overwrite the timestamp with the dim version
 		logging.info('Built message: '+message)
 
 	def buildBroken(self):
@@ -267,7 +340,7 @@ class Controller:
 		self.currentRoom = room
 		if room not in self.rooms:
 			room.add_listener(self.eventManager.handleEvent)
-			room.backfill_previous_messages(limit=self.eventManager.displayManager.messageDisplay.height+100)
+			room.backfill_previous_messages(limit=self.eventManager.displayManager.messageDisplay.height+10)
 		self.rooms.append(room)
 		self.eventManager.displayManager.changeRoom(room)
 		self.client.stop_listener_thread()
@@ -285,9 +358,12 @@ class Controller:
 		self.eventManager.displayManager.messageDisplay.printQueue(self.currentRoom)
 
 	def inputListener(self, keystroke):
-		if keystroke == curses.KEY_UP:
+		#logging.info(keystroke)
+		if keystroke == curses.KEY_ENTER or keystroke == 10:
+			return(7) # Ctrl-G
+		elif keystroke == curses.KEY_UP and self.eventManager.displayManager.inputBox.cursorIsAtTop:
 			self.changeOffset(1)
-		elif keystroke == curses.KEY_DOWN:
+		elif keystroke == curses.KEY_DOWN and self.eventManager.displayManager.inputBox.cursorIsAtBottom:
 			self.changeOffset(-1)
 		elif keystroke == curses.KEY_PPAGE:
 			self.changeOffset(10)
@@ -299,6 +375,15 @@ class Controller:
 logging.basicConfig(filename='nutmeg.log',level=logging.INFO)
 
 def main(stdscr):
+	logging.info('curses.wrapper initialized successfully. has_colors: %(hasColours)s, can_change_color: %(changeColours)s' %
+		{'hasColours': curses.has_colors(),
+		'changeColours': curses.can_change_color()})
+
+	curses.use_default_colors()
+	curses.init_color(curses.COLOR_WHITE, 500, 500, 500)
+	curses.init_pair(1, curses.COLOR_WHITE, -1)
+	stdscr.bkgd(curses.color_pair(1))
+
 	displayManager = DisplayManager(stdscr, 0, 0)
 	# Clear screen
 	stdscr.clear()
@@ -329,11 +414,14 @@ def main(stdscr):
 		{'roomName': ROOMNAME,
 		'homeServer': HOMESERVER})
 
+	#tbox = displayManager.inputBox
 	while True:
+		#logging.info((0,0, tbox.y,tbox.x, tbox.y+tbox.height,tbox.x+tbox.width))
+		#out = displayManager.inputBox.textbox.edit(0,0, tbox.y,tbox.x, tbox.y+tbox.height-1,tbox.x+tbox.width-1, controller.inputListener)
 		out = displayManager.inputBox.textbox.edit(controller.inputListener)
+		out = stripAutoNewlines(out, displayManager.inputBox.width)
 		controller.setOffset(0)
-		displayManager.inputBox.screen.clear()
-		displayManager.inputBox.screen.refresh()
+		displayManager.inputBox.clear()
 		if out:
 			OutgoingText(out, controller.currentRoom, controller.eventManager.handleEvent, backfill=3)
 
