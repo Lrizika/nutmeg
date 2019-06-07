@@ -278,10 +278,9 @@ class StatusDisplay:
 			'homeServer': server})
 		self.printStatus(status)
 
-	def printJoining(self, room, server):
-		status = ('Joining #%(roomName)s:%(homeServer)s...' % 
-			{'roomName': room,
-			'homeServer': server})
+	def printJoining(self, roomId):
+		status = ('Joining %(roomId)s...' % 
+			{'roomId': roomId})
 		self.printStatus(status)
 
 class MessageDisplay:
@@ -316,7 +315,9 @@ class MessageDisplay:
 		self.screen.clear()
 		self.screen.refresh()
 		y=self.height + self.y
-		queue = list(reversed(self.messageQueue[room]))[self.offset:]#self.height+self.offset]
+		#app_log.info(self.messageQueue)
+		#app_log.info(room)
+		queue = list(reversed(self.messageQueue[room.room_id]))[self.offset:]#self.height+self.offset]
 		for message in queue:#.get(room, count=self.height):
 			y -= message.printHeight
 			if y+message.printHeight<=self.y: return(False)
@@ -342,19 +343,19 @@ class MessageDisplay:
 			bool -- True if event is still last in queue
 		"""
 
-		if room not in self.messageQueue: self.messageQueue[room] = []
+		if room.room_id not in self.messageQueue: self.messageQueue[room.room_id] = []
 		
 		messagePad = curses.newpad(self.height, self.width)
-		self.messageQueue[room].append(Message(messagePad, room, event))
+		self.messageQueue[room.room_id].append(Message(messagePad, room, event))
 		if sortAfter is True: self.sortQueue(room)
-		return(self.messageQueue[room][-1].event == event)
+		return(self.messageQueue[room.room_id][-1].event == event)
 
 	def queueMessageChunk(self, room, events: list):
 		for event in events: self.queueMessage(room, event)
 		self.sortQueue(room)
 
 	def sortQueue(self, room):
-		self.messageQueue[room].sort(key=lambda ts: int(ts.event['origin_server_ts']))
+		self.messageQueue[room.room_id].sort(key=lambda ts: int(ts.event['origin_server_ts']))
 
 class Message:
 	def __init__(self, pad, room, event):
@@ -583,15 +584,29 @@ class Controller:
 		self.loadedAll = [] # For keeping track of which rooms we've already loaded all the messages in
 
 	def joinRoom(self, roomId):
-		room = self.client.join_room(roomId)
+		app_log.info('Joining '+str(roomId))
+		self.eventManager.displayManager.statusDisplay.printJoining(roomId)
+		room = self.currentRoom
+		for r in self.rooms: 
+			if r.room_id == roomId:
+				room = r
+				break
+		else:
+			try:
+				room = self.client.join_room(roomId)
+			except Exception as e:
+				app_log.error('Exception while joining room: '+str(e))
+				self.eventManager.displayManager.statusDisplay.printStatus('Failed to join room: '+roomId)
+				room = self.currentRoom
+				return
 		self.currentRoom = room
 		if room not in self.rooms:
 			room.add_listener(self.eventManager.handleEvent)
 			room.backfill_previous_messages(limit=self.eventManager.displayManager.messageDisplay.height*5)
-		self.rooms.append(room)
+			self.rooms.append(room)
+			self.client.stop_listener_thread()
+			self.client.start_listener_thread()
 		self.eventManager.displayManager.changeRoom(room)
-		self.client.stop_listener_thread()
-		self.client.start_listener_thread()
 
 	def changeOffset(self, amount):
 		self.offset += amount
@@ -602,7 +617,7 @@ class Controller:
 
 		# Load more messages if queue is too short and we haven't loaded all the messages yet
 		if self.currentRoom not in self.loadedAll and \
-				len(messageDisplay.messageQueue[self.currentRoom]) - self.offset < messageDisplay.height*5:
+				len(messageDisplay.messageQueue[self.currentRoom.room_id]) - self.offset < messageDisplay.height*5:
 			#app_log.info('Queue too short, loading more messages...')
 			self.eventManager.displayManager.statusDisplay.printRoomHeader(self.currentRoom, loading=True)
 			if backfill_previous_messages_and_update_batch(self.currentRoom, limit=messageDisplay.height*5) == 0:
@@ -611,7 +626,7 @@ class Controller:
 			self.eventManager.displayManager.statusDisplay.printRoomHeader(self.currentRoom, loading=False)
 
 		# Ugly hack to prevent scrolling up beyond the start of the room
-		if atTop:
+		if atTop and len(messageDisplay.messageQueue[self.currentRoom.room_id]) >= messageDisplay.height:
 			self.changeOffset(-1)
 
 	def setOffset(self, num):
@@ -632,6 +647,30 @@ class Controller:
 		elif keystroke == curses.KEY_NPAGE:
 			self.changeOffset(-10)
 		return(keystroke)
+
+class InputParser:
+	def __init__(self, controller):
+		self.controller = controller
+	
+	def parse(self, text):
+		if not text: return
+		if text[0] == '/':
+			self.parseCommand(text)
+		else:
+			OutgoingText(text, self.controller.currentRoom, self.controller.eventManager.handleEvent, backfill=3)
+
+	def parseCommand(self, text):
+		split = text.split(' ')
+		command = split[0]
+		args = []
+		if len(split) > 1:
+			args = text.split(' ')[1:]
+		
+		if command == '/join':
+			self.controller.joinRoom(args[0])
+		else:
+			app_log.warning('Invalid command string: '+text)
+
 
 #logging.basicConfig(filename='nutmeg.log',level=logging.INFO)
 log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(funcName)s(%(lineno)d) %(message)s')
@@ -681,9 +720,11 @@ def main(stdscr):
 	# Existing user
 	token = client.login_with_password(username=USERNAME, password=PASSWORD)
 
-	displayManager.statusDisplay.printJoining(ROOMNAME, HOMESERVER)
+	displayManager.statusDisplay.printJoining('#'+ROOMNAME+':'+HOMESERVER)
 
 	controller = Controller(client, EventManager(displayManager))
+
+	inputParser = InputParser(controller)
 	
 	controller.joinRoom('#%(roomName)s:%(homeServer)s' % 
 		{'roomName': ROOMNAME,
@@ -698,12 +739,16 @@ def main(stdscr):
 	while True:
 		#app_log.info((0,0, tbox.y,tbox.x, tbox.y+tbox.height,tbox.x+tbox.width))
 		#out = displayManager.inputBox.textbox.edit(0,0, tbox.y,tbox.x, tbox.y+tbox.height-1,tbox.x+tbox.width-1, controller.inputListener)
-		out = displayManager.inputBox.textbox.edit(controller.inputListener)
-		out = stripAutoNewlines(out, displayManager.inputBox.width)
+		inp = displayManager.inputBox.textbox.edit(controller.inputListener)
+		inp = stripAutoNewlines(inp, displayManager.inputBox.width)
 		controller.setOffset(0)
 		displayManager.inputBox.clear()
-		if out:
-			OutgoingText(out, controller.currentRoom, controller.eventManager.handleEvent, backfill=3)
+		try:
+			inputParser.parse(inp)
+		except Exception as e:
+			app_log.warning('Exception while parsing input "%(inp)s": %(e)s' %
+				{'inp': str(inp),
+				'e': str(e)})
 
 
 
