@@ -259,10 +259,12 @@ class StatusDisplay:
 		self.screen.refresh()
 	
 	def printRoomHeader(self, room, loading=False):
+		topic = room.topic
+		if len(topic) > 23: topic = topic[:20] + '...'
 		status = ('%(user)s - %(roomName)s - %(topic)s' %
 			{'user': str(getUser(room, room.client.user_id).get_display_name()),
 			'roomName': str(room.display_name),
-			'topic': str(room.topic)})
+			'topic': str(topic)})
 		if loading is True:
 			status += ' (Loading...)'
 		self.printStatus(status)
