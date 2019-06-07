@@ -1,11 +1,13 @@
 #!/usr/bin/python36
 
-from matrix_client.client import MatrixClient
+from matrix_client.client import MatrixClient, CACHE
+from matrix_client.errors import MatrixHttpLibError
 import datetime
 import curses
 from curses import textpad
 
 import logging
+from logging.handlers import RotatingFileHandler
 
 
 #
@@ -81,6 +83,28 @@ def stripAutoNewlines(text: str, interval: int) -> str:
 	newText += text[i-interval:]
 	return(newText)
 
+def backfill_previous_messages_and_update_batch(room, reverse=False, limit=10):
+	"""Backfill handling of previous messages, then update prev_batch
+	Allows for loading of older messages.
+
+	Args:
+		reverse (bool): When false messages will be backfilled in their original
+			order (old to new), otherwise the order will be reversed (new to old).
+		limit (int): Number of messages to go back.
+
+	Returns:
+		int: Number of events in chunk
+	"""
+	res = room.client.api.get_room_messages(room.room_id, room.prev_batch, direction="b", limit=limit)
+	events = res["chunk"]
+	room.prev_batch = res['end']
+	if not reverse:
+		events = reversed(events)
+	for event in events:
+		room._put_event(event)
+	return(len(res['chunk']))
+	#if len(res['chunk']) == 0:
+	#		raise IndexError('Tried to load beyond end of messages.')
 
 #class PadBox(curses.textpad.Textbox):
 	# """
@@ -113,7 +137,15 @@ class OutgoingText:
 	"""
 
 	def __init__(self, text, room, completeHandler, backfill: int=0):
-		self.eventId = room.send_text(text)['event_id']
+		try:
+			self.eventId = room.send_text(text)['event_id']
+		except MatrixHttpLibError as e:
+			app_log.warning('Exception while sending text, trying again: '+str(e))
+			try:
+				self.eventId = room.send_text(text)['event_id']
+			except MatrixHttpLibError as e:
+				app_log.error('Exception on second try sending text, aborting try: '+str(e))
+				raise
 		if backfill: room.backfill_previous_messages(limit=backfill)
 		completeHandler(room, getEvent(room, self.eventId))
 
@@ -130,20 +162,22 @@ class EventManager:
 	def handleEvent(self, room, event):
 		oldY, oldX = curses.getsyx()
 		if event['event_id'] not in self.handled:
-			logging.info('Handling event: '+event['event_id'])
-			if event['type'] == 'm.room.message': 
+			app_log.info('Handling event: '+event['event_id'])
+			try:
 				self.handleMessage(room, event)
-			else:
-				logging.error('Unknown event type: %(type)s' %
-					{'type': str(event['type'])})
+			except Exception as e:
+				app_log.error('Error while handling event: %(event)s' %
+					{'event': str(event)})
+				app_log.error(str(e))
 			self.handled.append(event['event_id'])
 		else:
-			logging.info('Already handled event: '+event['event_id'])
+			app_log.info('Already handled event: '+event['event_id'])
 		self.displayManager.screen.move(oldY, oldX)
 		self.displayManager.screen.refresh()
 
 	def handleMessage(self, room, event):
-		self.displayManager.messageDisplay.printMessage(room, event)
+		if self.displayManager.messageDisplay.queueMessage(room, event, sortAfter=True):
+			self.displayManager.messageDisplay.printQueue(room)
 		
 class DisplayManager:
 	def __init__(self, screen, y, x, startRoom = None):
@@ -213,16 +247,24 @@ class StatusDisplay:
 		self.height, self.width = screen.getmaxyx()
 
 	def printStatus(self, status):
-		logging.info('Status: '+status)
+		app_log.info('Status: '+status)
 		self.screen.clear()
-		self.screen.addstr(0,0,status,curses.color_pair(1))
+		try:
+			self.screen.addstr(0,0,status,curses.color_pair(1))
+		except curses.error as e:
+			self.screen.clear()
+			self.screen.addstr(0,0,'Nutmeg')
+			app_log.warning('Error when printing status: '+str(e))
+			app_log.info('Printing "Nutmeg" instead. (Was the original status too long?)')
 		self.screen.refresh()
 	
-	def printRoomHeader(self, room):
+	def printRoomHeader(self, room, loading=False):
 		status = ('%(user)s - %(roomName)s - %(topic)s' %
 			{'user': str(getUser(room, room.client.user_id).get_display_name()),
 			'roomName': str(room.display_name),
 			'topic': str(room.topic)})
+		if loading is True:
+			status += ' (Loading...)'
 		self.printStatus(status)
 
 	def printConnecting(self, server):
@@ -254,27 +296,65 @@ class MessageDisplay:
 		
 	def printMessage(self, room, event):
 		self.queueMessage(room, event)
-		self.printQueue(room)
+		self.printQueue(room, sortFirst=True)
 
-	def printQueue(self, room):
+	def printQueue(self, room, sortFirst: bool=False):
+		"""[summary]
+		
+		Arguments:
+			room {[type]} -- [description]
+		
+		Keyword Arguments:
+			sortFirst {bool} -- [description] (default: {False})
+
+		Returns:
+			bool -- Whether there is empty space at the top of the screen
+		"""
+
+		if sortFirst is True:
+			self.sortQueue(room)
 		self.screen.clear()
 		self.screen.refresh()
 		y=self.height + self.y
-		queue = list(reversed(self.messageQueue[room]))[self.offset:self.height+self.offset]
-		# TODO: Load more messages if queue is too short
+		queue = list(reversed(self.messageQueue[room]))[self.offset:]#self.height+self.offset]
 		for message in queue:#.get(room, count=self.height):
 			y -= message.printHeight
-			if y+message.printHeight<=self.y: break
-			message.pad.refresh(max(0, self.y-y),0, max(y, self.y),self.x, max(y+message.printHeight-1, self.y),self.width+self.x)
-			#logging.info((max(0, self.y-y),0, max(y, self.y),self.x, max(y+message.printHeight-1, self.y),self.width+self.x))
+			if y+message.printHeight<=self.y: return(False)
+			if message.printHeight:
+				try:
+					message.pad.refresh(max(0, self.y-y),0, max(y, self.y),self.x, max(y+message.printHeight-1, self.y),self.width+self.x)
+				except curses.error as e:
+					app_log.error('Exception received while printing queue: '+str(e))
+					app_log.info((max(0, self.y-y),0, max(y, self.y),self.x, max(y+message.printHeight-1, self.y),self.width+self.x))
+		return(y > self.y + 2)
 			
-	def queueMessage(self, room, event):
+	def queueMessage(self, room, event, sortAfter: bool=False) -> bool:
+		"""[summary]
+		
+		Arguments:
+			room {[type]} -- [description]
+			event {[type]} -- [description]
+		
+		Keyword Arguments:
+			sortAfter {bool} -- [description] (default: {False})
+
+		Returns:
+			bool -- True if event is still last in queue
+		"""
+
 		if room not in self.messageQueue: self.messageQueue[room] = []
 		
 		messagePad = curses.newpad(self.height, self.width)
 		self.messageQueue[room].append(Message(messagePad, room, event))
-		#else:
-		#	raise NotImplementedError('Handling for messages in other rooms is not yet implemented.')
+		if sortAfter is True: self.sortQueue(room)
+		return(self.messageQueue[room][-1].event == event)
+
+	def queueMessageChunk(self, room, events: list):
+		for event in events: self.queueMessage(room, event)
+		self.sortQueue(room)
+
+	def sortQueue(self, room):
+		self.messageQueue[room].sort(key=lambda ts: int(ts.event['origin_server_ts']))
 
 class Message:
 	def __init__(self, pad, room, event):
@@ -282,21 +362,186 @@ class Message:
 		self.room = room
 		self.pad = pad
 		self.height, self.width = pad.getmaxyx()
-		self.build()
+		try:
+			self.build()
+		except curses.error as e:
+			app_log.error('Exception in Message.build: '+str(e))
+			self.buildBroken()
 		try:
 			self.printHeight = getLastChar(self.pad)[0]+1
 		except IndexError:
 			self.printHeight = 0
 
 	def build(self):
+		if self.event['type'] == 'm.room.message':
+			self.buildMessage()
+		elif self.event['type'] == 'm.room.member':
+			self.buildMember()
+		elif self.event['type'] == 'm.room.create':
+			self.buildCreate()
+		elif self.event['type'] == 'm.room.name':
+			self.buildName()
+		elif self.event['type'] == 'm.room.aliases':
+			self.buildAliases()
+		elif self.event['type'] == 'm.room.canonical_alias':
+			self.buildCanonical()
+		elif self.event['type'] == 'm.room.topic':
+			self.buildTopic()
+		elif self.event['type'] in [
+				'm.room.power_levels', 
+				'm.room.join_rules', 
+				'm.room.history_visibility', 
+				'm.room.guest_access']:
+			app_log.info('Not building message for event: %(event)s' %
+				{'event': str(self.event)})
+			# These events don't warrant display
+		else:
+			self.buildBroken()
+
+	def buildTopic(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(sender)s changed the topic to "%(topic)s".' %
+			{'timestamp': timestamp,
+			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
+			'topic': str(self.event['content']['topic'])})
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildCanonical(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(sender)s changed the room\'s canonical alias to %(alias)s.' %
+			{'timestamp': timestamp,
+			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
+			'alias': str(self.event['content']['alias'])})
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildAliases(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		aliasStr = ''
+		if len(self.event['content']['aliases']) == 0:
+			aliasStr = ' There are no known aliases.'
+		elif len(self.event['content']['aliases']) <= 5:
+			aliasStr = ' Current known aliases: '
+			for alias in self.event['content']['aliases']:
+				aliasStr += str(alias) + ', '
+			aliasStr = aliasStr[:-2]
+		message = ('%(timestamp)s %(sender)s updated the room aliases.' %
+			{'timestamp': timestamp,
+			'sender': str(getUser(self.room, self.event['sender']).get_display_name())})
+		message += aliasStr
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildName(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(sender)s changed the room name to %(name)s.' %
+			{'timestamp': timestamp,
+			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
+			'name': str(self.event['content']['name'])})
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildCreate(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(sender)s created the room.' %
+			{'timestamp': timestamp,
+			'sender': str(getUser(self.room, self.event['sender']).get_display_name())})
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildMember(self):
+		if self.event['content']['membership'] == 'join':
+			if 'unsigned' in self.event and \
+				'prev_content' in self.event['unsigned'] and \
+					'displayname' in self.event['unsigned']['prev_content']:
+				self.buildChangedName()
+			else:
+				self.buildJoin()
+		elif self.event['content']['membership'] == 'invite':
+			self.buildInvite()
+		elif self.event['content']['membership'] == 'leave':
+			if 'unsigned' in self.event and \
+				'prev_content' in self.event['unsigned'] and \
+					'membership' in self.event['unsigned']['prev_content'] and \
+						self.event['unsigned']['prev_content']['membership'] == 'ban':
+				self.buildUnban()
+			else:
+				self.buildLeave()
+		elif self.event['content']['membership'] == 'ban':
+			self.buildBan()
+		else:
+			self.buildBroken()
+
+	def buildInvite(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(username)s invited %(invitee)s (%(stateKey)s).' %
+			{'timestamp': timestamp,
+			'username': str(getUser(self.room, self.event['sender']).get_display_name()),
+			'invitee': str(self.event['content']['displayname']),
+			'stateKey': str(self.event['state_key'])})
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildChangedName(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		oldName = str(self.event['unsigned']['prev_content']['displayname'])
+		newName = str(self.event['content']['displayname'])
+		if oldName != newName:
+			message = ('%(timestamp)s %(oldName)s changed their display name to %(newName)s.' %
+				{'timestamp': timestamp,
+				'oldName': oldName,
+				'newName': newName})
+			getUser(self.room, self.event['sender']).displayname = self.event['content']['displayname']
+			app_log.info('Built message: '+message)
+			self.pad.addstr(0,0,message,curses.color_pair(1))
+		else:
+			self.buildJoin()
+
+	def buildBan(self):
+		reasonStr = ''
+		if 'reason' in self.event['content']:
+			reasonStr = ' Reason: '+str(self.event['content']['reason'])
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(sender)s banned %(stateKey)s.' %
+			{'timestamp': timestamp,
+			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
+			'stateKey': str(self.event['state_key'])})
+		message += reasonStr
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildUnban(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(sender)s unbanned %(stateKey)s.' %
+			{'timestamp': timestamp,
+			'stateKey': str(self.event['state_key']),
+			'sender': str(getUser(self.room, self.event['sender']).get_display_name())})
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildLeave(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(stateKey)s left the room.' %
+			{'timestamp': timestamp,
+			'stateKey': str(self.event['state_key'])})
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildJoin(self):
+		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
+		message = ('%(timestamp)s %(username)s joined the room.' %
+			{'timestamp': timestamp,
+			'username': str(getUser(self.room, self.event['state_key']).get_friendly_name())})
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
+
+	def buildMessage(self):
 		if self.event['content']['msgtype'] == 'm.text':
 			self.buildText()
 		elif self.event['content']['msgtype'] == 'm.emote':
 			self.buildEmote()
 		else:
-			logging.warning('Unknown event content msgtype "%(msgtype)s" while building message for event: %(event)s' %
-				{'msgtype': str(self.event['content']['msgtype']),
-				'event': str(self.event)})
 			self.buildBroken()
 
 	def buildText(self):
@@ -305,9 +550,9 @@ class Message:
 			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'message': str(self.event['content']['body'])})
+		app_log.info('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.A_NORMAL)
 		self.pad.addstr(0,0,timestamp,curses.color_pair(1)) # Just overwrite the timestamp with the dim version
-		logging.info('Built message: '+message)
 
 	def buildEmote(self):
 		timestamp = tsToDt(str(self.event['origin_server_ts'])) + ' -'
@@ -315,17 +560,18 @@ class Message:
 			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'message': str(self.event['content']['body'])})
+		app_log.info('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.A_BOLD)
 		self.pad.addstr(0,0,timestamp,curses.color_pair(1)) # Just overwrite the timestamp with the dim version
-		logging.info('Built message: '+message)
 
 	def buildBroken(self):
-		message = ('%(timestamp)s: Something went wrong displaying message %(eventId)s from %(sender)s. Check the logs for more info.' %
+		app_log.warning('Unknown event: %(event)s' %
+			{'event': str(self.event)})
+		message = ('%(timestamp)s: Something went wrong displaying message %(eventId)s. Check the logs for more info.' %
 			{'timestamp': tsToDt(str(self.event['origin_server_ts'])),
-			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'eventId': str(self.event['event_id'])})
-		self.pad.addstr(0,0,message)
-		logging.info('Built message: '+message)
+		app_log.info('Built message: '+message)
+		self.pad.addstr(0,0,message,curses.color_pair(1))
 		
 class Controller:
 	def __init__(self, client, eventManager):
@@ -334,13 +580,14 @@ class Controller:
 		self.offset = 0
 		self.rooms = []
 		self.eventManager = eventManager
+		self.loadedAll = [] # For keeping track of which rooms we've already loaded all the messages in
 
 	def joinRoom(self, roomId):
 		room = self.client.join_room(roomId)
 		self.currentRoom = room
 		if room not in self.rooms:
 			room.add_listener(self.eventManager.handleEvent)
-			room.backfill_previous_messages(limit=self.eventManager.displayManager.messageDisplay.height+10)
+			room.backfill_previous_messages(limit=self.eventManager.displayManager.messageDisplay.height*5)
 		self.rooms.append(room)
 		self.eventManager.displayManager.changeRoom(room)
 		self.client.stop_listener_thread()
@@ -349,8 +596,23 @@ class Controller:
 	def changeOffset(self, amount):
 		self.offset += amount
 		if self.offset < 0: self.offset = 0
-		self.eventManager.displayManager.messageDisplay.offset = self.offset
-		self.eventManager.displayManager.messageDisplay.printQueue(self.currentRoom)
+		messageDisplay = self.eventManager.displayManager.messageDisplay
+		messageDisplay.offset = self.offset
+		atTop = messageDisplay.printQueue(self.currentRoom)
+
+		# Load more messages if queue is too short and we haven't loaded all the messages yet
+		if self.currentRoom not in self.loadedAll and \
+				len(messageDisplay.messageQueue[self.currentRoom]) - self.offset < messageDisplay.height*5:
+			#app_log.info('Queue too short, loading more messages...')
+			self.eventManager.displayManager.statusDisplay.printRoomHeader(self.currentRoom, loading=True)
+			if backfill_previous_messages_and_update_batch(self.currentRoom, limit=messageDisplay.height*5) == 0:
+				self.loadedAll.append(self.currentRoom)
+			atTop = messageDisplay.printQueue(self.currentRoom, sortFirst=True)
+			self.eventManager.displayManager.statusDisplay.printRoomHeader(self.currentRoom, loading=False)
+
+		# Ugly hack to prevent scrolling up beyond the start of the room
+		if atTop:
+			self.changeOffset(-1)
 
 	def setOffset(self, num):
 		self.offset = num
@@ -358,7 +620,7 @@ class Controller:
 		self.eventManager.displayManager.messageDisplay.printQueue(self.currentRoom)
 
 	def inputListener(self, keystroke):
-		#logging.info(keystroke)
+		#app_log.info(keystroke)
 		if keystroke == curses.KEY_ENTER or keystroke == 10:
 			return(7) # Ctrl-G
 		elif keystroke == curses.KEY_UP and self.eventManager.displayManager.inputBox.cursorIsAtTop:
@@ -371,11 +633,24 @@ class Controller:
 			self.changeOffset(-10)
 		return(keystroke)
 
+#logging.basicConfig(filename='nutmeg.log',level=logging.INFO)
+log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(funcName)s(%(lineno)d) %(message)s')
 
-logging.basicConfig(filename='nutmeg.log',level=logging.INFO)
+logFile = 'logs/nutmeg.log'
+
+my_handler = RotatingFileHandler(logFile, mode='a', maxBytes=1*1024*1024, 
+                                 backupCount=10, encoding=None, delay=0)
+my_handler.setFormatter(log_formatter)
+my_handler.setLevel(logging.INFO)
+
+app_log = logging.getLogger('root')
+app_log.setLevel(logging.INFO)
+
+app_log.addHandler(my_handler)
+
 
 def main(stdscr):
-	logging.info('curses.wrapper initialized successfully. has_colors: %(hasColours)s, can_change_color: %(changeColours)s' %
+	app_log.info('curses.wrapper initialized successfully. has_colors: %(hasColours)s, can_change_color: %(changeColours)s' %
 		{'hasColours': curses.has_colors(),
 		'changeColours': curses.can_change_color()})
 
@@ -399,7 +674,7 @@ def main(stdscr):
 	displayManager.statusDisplay.printConnecting(HOMESERVER)
 
 	client = MatrixClient('https://%(homeServer)s' %
-		{'homeServer': HOMESERVER})
+		{'homeServer': HOMESERVER}, cache_level=CACHE.NONE)
 
 	displayManager.statusDisplay.printLoggingIn(USERNAME, HOMESERVER)
 
@@ -414,9 +689,14 @@ def main(stdscr):
 		{'roomName': ROOMNAME,
 		'homeServer': HOMESERVER})
 
+	#t = client.api.get_room_messages(controller.currentRoom.room_id, controller.currentRoom.prev_batch, direction="b", limit=10)
+	#controller.currentRoom.prev_batch = t['end']
+	#app_log.info(t)
+	#app_log.info(client.api.get_room_messages(controller.currentRoom.room_id, controller.currentRoom.prev_batch, direction="b", limit=10))
+
 	#tbox = displayManager.inputBox
 	while True:
-		#logging.info((0,0, tbox.y,tbox.x, tbox.y+tbox.height,tbox.x+tbox.width))
+		#app_log.info((0,0, tbox.y,tbox.x, tbox.y+tbox.height,tbox.x+tbox.width))
 		#out = displayManager.inputBox.textbox.edit(0,0, tbox.y,tbox.x, tbox.y+tbox.height-1,tbox.x+tbox.width-1, controller.inputListener)
 		out = displayManager.inputBox.textbox.edit(controller.inputListener)
 		out = stripAutoNewlines(out, displayManager.inputBox.width)
@@ -424,6 +704,8 @@ def main(stdscr):
 		displayManager.inputBox.clear()
 		if out:
 			OutgoingText(out, controller.currentRoom, controller.eventManager.handleEvent, backfill=3)
+
+
 
 curses.wrapper(main)
 

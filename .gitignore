@@ -4,5 +4,5 @@
 *.sublime-workspace
 *.sublime-project
 .vscode/*
-*.log
+python/logs/*
 python/testuser-password
