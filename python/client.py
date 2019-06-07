@@ -203,7 +203,7 @@ class DisplayManager:
 		self.inputBox = InputBox(self.inputScreen, inputY, inputX)
 		messageY = statusHeight + statusY
 		messageHeight = self.height - messageY - inputHeight
-		messageX = 10
+		messageX = 0#10
 		messageWidth = self.width - messageX
 		self.messageScreen = curses.newwin(messageHeight, messageWidth, messageY, messageX)
 		self.messageDisplay = MessageDisplay(self.messageScreen, messageY, messageX)#, self.messageQueue)
