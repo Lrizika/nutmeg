@@ -13,6 +13,22 @@ from logging.handlers import RotatingFileHandler
 #
 # Utility Functions
 #
+def descendants(cls: type) -> list:
+	"""
+	Return a list of all descendant classes of a class
+	
+	Arguments:
+		cls (type): Class from which to identify descendants
+	Returns:
+		subclasses (list): List of all descendant classes
+	"""
+
+	subclasses = cls.__subclasses__()
+	for subclass in subclasses:
+		subclasses.extend(descendants(subclass))
+
+	return(subclasses)
+
 def tsToDt(timestamp: str) -> str:
 	"""
 	Convert a timestamp string to a human-readable string.
@@ -81,6 +97,7 @@ def stripAutoNewlines(text: str, interval: int) -> str:
 		newText += text[i-interval:i]
 		i += interval + 1
 	newText += text[i-interval:]
+	if newText[-1] == '\n': newText = newText[:-1]
 	return(newText)
 
 def backfill_previous_messages_and_update_batch(room, reverse=False, limit=10):
@@ -260,6 +277,7 @@ class StatusDisplay:
 	
 	def printRoomHeader(self, room, loading=False):
 		topic = room.topic
+		if not topic: topic = '(No topic)'
 		if len(topic) > 23: topic = topic[:20] + '...'
 		status = ('%(user)s - %(roomName)s - %(topic)s' %
 			{'user': str(getUser(room, room.client.user_id).get_display_name()),
@@ -653,8 +671,12 @@ class Controller:
 class InputParser:
 	def __init__(self, controller):
 		self.controller = controller
+		self.commands = {descendant.command:descendant for descendant in descendants(Command)}
+		self.commands.update({alias:descendant for descendant in descendants(Command) for alias in descendant.aliases})
+		app_log.info('Loaded commands, InputParser.commands = '+str(self.commands))
 	
 	def parse(self, text):
+		text = str.strip(text)
 		if not text: return
 		if text[0] == '/':
 			self.parseCommand(text)
@@ -662,17 +684,60 @@ class InputParser:
 			OutgoingText(text, self.controller.currentRoom, self.controller.eventManager.handleEvent, backfill=3)
 
 	def parseCommand(self, text):
+		app_log.info('Parsing input as command: '+text)
 		split = text.split(' ')
-		command = split[0]
+		command = split[0][1:]
 		args = []
 		if len(split) > 1:
-			args = text.split(' ')[1:]
-		
-		if command == '/join':
-			self.controller.joinRoom(args[0])
+			args = split[1:]
+
+		if command in self.commands:
+			self.commands[command](self.controller, args)
+		#if command == '/join':
+		#	self.controller.joinRoom(args[0])
 		else:
 			app_log.warning('Invalid command string: '+text)
+			# TODO: Something
 
+class Command:
+	command = None
+	aliases = []
+	def __init__(self, controller, args):
+		app_log.info('Executing command %(command)s with args: %(args)s' %
+			{'command': str(self.command),
+			'args': str(args)})
+		self.validate(args)
+		self.execute(controller, args)
+	def validate(self, args):
+		pass
+	def help(self):
+		return('There\'s no help message for this command.')
+	def execute(self, controller, args):
+		raise NotImplementedError
+
+class Join(Command):
+	command = 'join'
+	aliases = ['move']
+	def validate(self, args):
+		if len(args) != 1:
+			raise IndexError('Join requires exactly one argument (destination room).')
+	def help(self):
+		return("""Usage: /join #room:matrix.homeserver.tld
+			Join or move to another room.
+			Aliases: /move""")
+	def execute(self, controller, args):
+		controller.joinRoom(args[0])
+
+class Whoami(Command):
+	command = 'whoami'
+	def validate(self, args):
+		if len(args) != 0:
+			raise IndexError('Whoami requires zero arguments.')
+	def help(self):
+		return("""Usage: /whoami
+			Print the current logged in client.""")
+	def execute(self, controller, args):
+		raise NotImplementedError
 
 #logging.basicConfig(filename='nutmeg.log',level=logging.INFO)
 log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(funcName)s(%(lineno)d) %(message)s')
