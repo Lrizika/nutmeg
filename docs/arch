@@ -1,4 +1,17 @@
+New Arch:
 
-
-
+EventHandler
+     |
+	 |
+     |    |===============> InputParser
+	 V    |                           |
+ Controller ======|                   V                           
+     |            |            |====> InputBox                                    
+	 V            V            |                                         
+StateManager ===> DisplayManager ===> MessageDisplay ===> MessageQueue ===> Message ===> Event                                        
+	 |            ^            |                                                         ^  
+	 V            |            |====> StatusDisplay                                      |                
+EventQueue =======|                                                                      | 
+     |                                                                                   |
+     |===================================================================================|
 

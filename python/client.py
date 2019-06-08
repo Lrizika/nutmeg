@@ -179,7 +179,7 @@ class EventManager:
 	def handleEvent(self, room, event):
 		oldY, oldX = curses.getsyx()
 		if event['event_id'] not in self.handled:
-			app_log.info('Handling event: '+event['event_id'])
+			app_log.debug('Handling event: '+event['event_id'])
 			try:
 				self.handleMessage(room, event)
 			except Exception as e:
@@ -188,13 +188,14 @@ class EventManager:
 				app_log.error(str(e))
 			self.handled.append(event['event_id'])
 		else:
-			app_log.info('Already handled event: '+event['event_id'])
+			app_log.debug('Already handled event: '+event['event_id'])
 		self.displayManager.screen.move(oldY, oldX)
 		self.displayManager.screen.refresh()
 
 	def handleMessage(self, room, event):
 		if self.displayManager.messageDisplay.queueMessage(room, event, sortAfter=True):
-			self.displayManager.messageDisplay.printQueue(room)
+			if self.displayManager.currentRoom is not None and self.displayManager.currentRoom.room_id == room.room_id:
+				self.displayManager.messageDisplay.printQueue(room)
 		
 class DisplayManager:
 	def __init__(self, screen, y, x, startRoom = None):
@@ -227,12 +228,14 @@ class DisplayManager:
 		if startRoom is not None: self.changeRoom(startRoom)
 		
 	def changeRoom(self, room):
+		oldY, oldX = curses.getsyx()
 		self.currentRoom = room
 		#self.messageQueue.addRoom(room)
 		self.currentRoom.update_room_name()
 		self.currentRoom.update_room_topic()
 		self.currentRoom.update_aliases()
 		self.statusDisplay.printRoomHeader(room)
+		self.screen.move(oldY, oldX)
 
 class InputBox:
 	def __init__(self, screen, y, x):
@@ -263,8 +266,10 @@ class StatusDisplay:
 		self.x = x
 		self.height, self.width = screen.getmaxyx()
 
-	def printStatus(self, status):
+	def printStatus(self, status: str) -> None:
 		app_log.info('Status: '+status)
+		if len(status) >= self.width:
+			status = status[:self.width-4] + '...'
 		self.screen.clear()
 		try:
 			self.screen.addstr(0,0,status,curses.color_pair(1))
@@ -272,7 +277,7 @@ class StatusDisplay:
 			self.screen.clear()
 			self.screen.addstr(0,0,'Nutmeg')
 			app_log.warning('Error when printing status: '+str(e))
-			app_log.info('Printing "Nutmeg" instead. (Was the original status too long?)')
+			app_log.info('Printing "Nutmeg" instead.')
 		self.screen.refresh()
 	
 	def printRoomHeader(self, room, loading=False):
@@ -413,7 +418,7 @@ class Message:
 				'm.room.join_rules', 
 				'm.room.history_visibility', 
 				'm.room.guest_access']:
-			app_log.info('Not building message for event: %(event)s' %
+			app_log.debug('Not building message for event: %(event)s' %
 				{'event': str(self.event)})
 			# These events don't warrant display
 		else:
@@ -425,7 +430,7 @@ class Message:
 			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'topic': str(self.event['content']['topic'])})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildCanonical(self):
@@ -434,7 +439,7 @@ class Message:
 			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'alias': str(self.event['content']['alias'])})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildAliases(self):
@@ -451,7 +456,7 @@ class Message:
 			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name())})
 		message += aliasStr
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildName(self):
@@ -460,7 +465,7 @@ class Message:
 			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'name': str(self.event['content']['name'])})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildCreate(self):
@@ -468,7 +473,7 @@ class Message:
 		message = ('%(timestamp)s %(sender)s created the room.' %
 			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name())})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildMember(self):
@@ -501,7 +506,7 @@ class Message:
 			'username': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'invitee': str(self.event['content']['displayname']),
 			'stateKey': str(self.event['state_key'])})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildChangedName(self):
@@ -514,7 +519,7 @@ class Message:
 				'oldName': oldName,
 				'newName': newName})
 			getUser(self.room, self.event['sender']).displayname = self.event['content']['displayname']
-			app_log.info('Built message: '+message)
+			app_log.debug('Built message: '+message)
 			self.pad.addstr(0,0,message,curses.color_pair(1))
 		else:
 			self.buildJoin()
@@ -529,7 +534,7 @@ class Message:
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'stateKey': str(self.event['state_key'])})
 		message += reasonStr
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildUnban(self):
@@ -538,7 +543,7 @@ class Message:
 			{'timestamp': timestamp,
 			'stateKey': str(self.event['state_key']),
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name())})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildLeave(self):
@@ -546,7 +551,7 @@ class Message:
 		message = ('%(timestamp)s %(stateKey)s left the room.' %
 			{'timestamp': timestamp,
 			'stateKey': str(self.event['state_key'])})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildJoin(self):
@@ -554,7 +559,7 @@ class Message:
 		message = ('%(timestamp)s %(username)s joined the room.' %
 			{'timestamp': timestamp,
 			'username': str(getUser(self.room, self.event['state_key']).get_friendly_name())})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 
 	def buildMessage(self):
@@ -571,7 +576,7 @@ class Message:
 			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'message': str(self.event['content']['body'])})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.A_NORMAL)
 		self.pad.addstr(0,0,timestamp,curses.color_pair(1)) # Just overwrite the timestamp with the dim version
 
@@ -581,7 +586,7 @@ class Message:
 			{'timestamp': timestamp,
 			'sender': str(getUser(self.room, self.event['sender']).get_display_name()),
 			'message': str(self.event['content']['body'])})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.A_BOLD)
 		self.pad.addstr(0,0,timestamp,curses.color_pair(1)) # Just overwrite the timestamp with the dim version
 
@@ -591,7 +596,7 @@ class Message:
 		message = ('%(timestamp)s: Something went wrong displaying message %(eventId)s. Check the logs for more info.' %
 			{'timestamp': tsToDt(str(self.event['origin_server_ts'])),
 			'eventId': str(self.event['event_id'])})
-		app_log.info('Built message: '+message)
+		app_log.debug('Built message: '+message)
 		self.pad.addstr(0,0,message,curses.color_pair(1))
 		
 class Controller:
@@ -599,34 +604,31 @@ class Controller:
 		self.client = client
 		self.currentRoom = None
 		self.offset = 0
-		self.rooms = []
+		self.rooms = {}
 		self.eventManager = eventManager
 		self.loadedAll = [] # For keeping track of which rooms we've already loaded all the messages in
 
 	def joinRoom(self, roomId):
 		app_log.info('Joining '+str(roomId))
 		self.eventManager.displayManager.statusDisplay.printJoining(roomId)
-		room = self.currentRoom
-		for r in self.rooms: 
-			if r.room_id == roomId:
-				room = r
-				break
+		if roomId in self.rooms: room = self.rooms[roomId]
+		elif roomId in self.client.rooms: room = self.client.rooms[roomId]
 		else:
 			try:
 				room = self.client.join_room(roomId)
+				self.rooms[roomId] = room
+				room.add_listener(self.eventManager.handleEvent)
+				room.backfill_previous_messages(limit=self.eventManager.displayManager.messageDisplay.height*5)
+				self.client.stop_listener_thread()
+				self.client.start_listener_thread()
 			except Exception as e:
 				app_log.error('Exception while joining room: '+str(e))
 				self.eventManager.displayManager.statusDisplay.printStatus('Failed to join room: '+roomId)
 				room = self.currentRoom
 				return
 		self.currentRoom = room
-		if room not in self.rooms:
-			room.add_listener(self.eventManager.handleEvent)
-			room.backfill_previous_messages(limit=self.eventManager.displayManager.messageDisplay.height*5)
-			self.rooms.append(room)
-			self.client.stop_listener_thread()
-			self.client.start_listener_thread()
 		self.eventManager.displayManager.changeRoom(room)
+		self.eventManager.displayManager.messageDisplay.printQueue(room, sortFirst=True)
 
 	def changeOffset(self, amount):
 		self.offset += amount
@@ -753,6 +755,8 @@ app_log = logging.getLogger('root')
 app_log.setLevel(logging.INFO)
 
 app_log.addHandler(my_handler)
+app_log.critical('***********************************')
+app_log.critical('Nutmeg started, logging initialized')
 
 
 def main(stdscr):
