@@ -283,7 +283,7 @@ class StatusDisplay:
 	def printRoomHeader(self, room, loading=False):
 		topic = room.topic
 		if not topic: topic = '(No topic)'
-		if len(topic) > 23: topic = topic[:20] + '...'
+		#if len(topic) > 23: topic = topic[:20] + '...'
 		status = ('%(user)s - %(roomName)s - %(topic)s' %
 			{'user': str(getUser(room, room.client.user_id).get_display_name()),
 			'roomName': str(room.display_name),
@@ -724,7 +724,7 @@ class Join(Command):
 		if len(args) != 1:
 			raise IndexError('Join requires exactly one argument (destination room).')
 	def help(self):
-		return("""Usage: /join #room:matrix.homeserver.tld
+		return("""Usage: /join #room:homeserver.tld
 			Join or move to another room.
 			Aliases: /move""")
 	def execute(self, controller, args):
@@ -752,7 +752,7 @@ my_handler.setFormatter(log_formatter)
 my_handler.setLevel(logging.INFO)
 
 app_log = logging.getLogger('root')
-app_log.setLevel(logging.INFO)
+app_log.setLevel(logging.INFO)#INFO
 
 app_log.addHandler(my_handler)
 app_log.critical('***********************************')
@@ -777,9 +777,9 @@ def main(stdscr):
 
 	with open('testuser-password', 'r') as passFile:
 		PASSWORD = passFile.read().strip()
-	HOMESERVER = 'matrix.lrizika.com'
+	HOMESERVER = 'lrizika.com'
 	USERNAME = 'testuser'
-	ROOMNAME = 'test2'
+	ROOMNAME = 'test4'
 
 	displayManager.statusDisplay.printConnecting(HOMESERVER)
 

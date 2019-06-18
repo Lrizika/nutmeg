@@ -1,17 +1,22 @@
 New Arch:
 
-EventHandler
-     |
-	 |
-     |    |===============> InputParser
-	 V    |                           |
- Controller ======|                   V                           
-     |            |            |====> InputBox                                    
-	 V            V            |                                         
-StateManager ===> DisplayManager ===> MessageDisplay ===> MessageQueue ===> Message ===> Event                                        
-	 |            ^            |                                                         ^  
-	 V            |            |====> StatusDisplay                                      |                
-EventQueue =======|                                                                      | 
-     |                                                                                   |
-     |===================================================================================|
+|    | |=> room <=============================================|             
+|    | |                                                      |
+|    | |  |================ InputParser                       |
+|    | |  |                 |         |                       |
+|    | |  |                 |         |                       |
+|	 | |  V   |=============|         |                       |
+|Controller   |                       V                       |
+|    |    |   |                       InputBox                |
+|    | |==|===|                       ^                       |
+|    | |  V   V                       |                       |
+|    | |  DisplayController           |                       |
+|    | |  ^   ^    |           |======|                       |     
+|	 V V  |   |    |           |                              |
+StateManager  |    |=========> MessageDisplay ===> MessageQueue ===> Message ===> Event                                        
+	 |        |                |                                                      ^  
+	 V        |                |====> StatusDisplay                                   |                
+EventQueue ===|                                                                       | 
+     |                                                                                |
+     |================================================================================|
 
