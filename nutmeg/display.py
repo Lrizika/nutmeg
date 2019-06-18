@@ -1,11 +1,13 @@
 try:
 	from .utils import tsToDt, getMember, descendants, getLastChar2
-	from .constants import MTYPE
+	from .constants import MTYPE, MODES
 	from .message import MessageBuilder, Message
+	from .errors import InvalidModeError
 except ImportError:
 	from utils import tsToDt, getMember, descendants, getLastChar2
-	from constants import MTYPE
+	from constants import MTYPE, MODES
 	from message import MessageBuilder, Message
+	from errors import InvalidModeError
 import curses, _curses
 import matrix_client.room
 
@@ -61,6 +63,7 @@ class MessageQueues:
 		self.queues[room.room_id].sort(key=lambda message: int(message.event['origin_server_ts']), reverse=True)
 
 	def getQueue(self, room:matrix_client.room.Room, start:int = 0, count:int = 0) -> list:
+		#display_logger.debug('Queues: '+str(self.queues))
 		if count is 0:
 			return(self.queues[room.room_id][start:])
 		return(self.queues[room.room_id][start:start+count])
@@ -72,9 +75,29 @@ class DisplayController:
 		curses.init_color(curses.COLOR_WHITE, 500, 500, 500)
 		curses.init_pair(1, curses.COLOR_WHITE, -1)
 		screen.bkgd(curses.color_pair(1))
+		self.messageDisplay = None
 		self.buildWindows()
 		self.offset = 0
 		self.currentRoom = None
+		self.mode = MODES.EDIT
+
+	def setMode(self, mode:MODES, inputListener:callable):
+		if not isinstance(mode, MODES):
+			raise InvalidModeError('Tried to enter invalid mode: '+str(mode))
+
+		self.mode = mode
+
+		if self.mode is MODES.EDIT:
+			self.buildWindows()
+		elif self.mode is MODES.VISUAL:
+			self.inputBox.clear()
+			self.buildWindows(inputHeight=0)
+
+		self.changeOffset(0)
+
+	def clearInput(self):
+		if self.inputBox is not None:
+			self.inputBox.clear()
 
 	def buildWindows(self, statusHeight:int=1, inputHeight:int=4):
 		self.height, self.width = self.screen.getmaxyx()
@@ -82,21 +105,27 @@ class DisplayController:
 		statusY = 0
 		statusX = 0
 		statusWidth = self.width - statusX
-		self.statusWindow = self.screen.subwin(statusHeight, statusWidth, statusY, statusX)
-		# TODO: self.statusDisplay = StatusDisplay
+		statusWindow = self.screen.subwin(statusHeight, statusWidth, statusY, statusX)
+		self.statusDisplay = StatusDisplay(statusWindow, statusY, statusX)
 
 		messageY = statusY + statusHeight
 		messageX = 0
 		messageHeight = self.height - statusHeight - inputHeight - 1
 		messageWidth = self.width - messageX
 		messageWindow = self.screen.subwin(messageHeight, messageWidth, messageY, messageX)
-		self.messageDisplay = MessageDisplay(messageWindow, messageY, messageX)
+		if self.messageDisplay is None:
+			self.messageDisplay = MessageDisplay(messageWindow, messageY, messageX)
+		else:
+			self.messageDisplay.setWindow(messageWindow, messageY, messageX)
 
-		inputY = self.height - inputHeight
-		inputX = 0
-		inputWidth = self.width - inputX
-		self.inputWindow = self.screen.subwin(inputHeight, inputWidth, inputY, inputX)
-		self.inputBox = InputBox(self.inputWindow, inputY, inputX)
+		if inputHeight > 0:
+			inputY = self.height - inputHeight
+			inputX = 0
+			inputWidth = self.width - inputX
+			self.inputWindow = self.screen.subwin(inputHeight, inputWidth, inputY, inputX)
+			self.inputBox = InputBox(self.inputWindow, inputY, inputX)
+		else:
+			self.inputBox = None
 
 	def changeRoom(self, room:matrix_client.room.Room, sortFirst:bool=False):
 		if sortFirst: self.messageDisplay.messageQueues.sortQueue(room)
@@ -107,6 +136,16 @@ class DisplayController:
 			self.offset = 0
 			self.messageDisplay.printQueue(room, offset=self.offset)
 			# TODO: Update status etc
+
+	def changeOffset(self, amount:int):
+		display_logger.debug('changeOffset called. Current offset: '+str(self.offset)+', amount: '+str(amount))
+		self.offset += amount
+		if self.offset < 0: self.offset = 0
+		topSpace = self.messageDisplay.printQueue(self.currentRoom, offset=self.offset)
+		while topSpace > 1 and self.offset > 0:
+			self.offset -= 1
+			topSpace = self.messageDisplay.printQueue(self.currentRoom, offset=self.offset)
+		display_logger.debug('New offset: '+str(self.offset))
 
 	def enqueue(self, event:dict, room:matrix_client.room.Room):
 		self.messageDisplay.messageQueues.buildAndEnqueue(event, room)
@@ -207,7 +246,55 @@ class MessageDisplay:
 				# If the pad doesn't have any characters in it, we don't want to step up
 				pass
 
+		display_logger.debug('printQueue returned: '+str(max(y-self.y, 0)))
 
 		return(max(y-self.y, 0))
 
+class StatusDisplay:
+	def __init__(self, screen, y, x):
+		self.screen = screen
+		self.y = y
+		self.x = x
+		self.height, self.width = screen.getmaxyx()
 
+	def printStatus(self, status: str) -> None:
+		display_logger.info('Status: '+status)
+		if len(status) >= self.width:
+			status = status[:self.width-4] + '...'
+		self.screen.clear()
+		try:
+			self.screen.addstr(0,0,status,curses.color_pair(1))
+		except curses.error as e:
+			self.screen.clear()
+			self.screen.addstr(0,0,'Nutmeg')
+			display_logger.warning('Error when printing status: '+str(e))
+			display_logger.info('Printing "Nutmeg" instead.')
+		self.screen.refresh()
+	
+	def printRoomHeader(self, room, loading=False):
+		topic = room.topic
+		if not topic: topic = '(No topic)'
+		#if len(topic) > 23: topic = topic[:20] + '...'
+		status = ('%(user)s - %(roomName)s - %(topic)s' %
+			{'user': str(getMember(room, room.client.user_id).get_display_name()),
+			'roomName': str(room.display_name),
+			'topic': str(topic)})
+		if loading is True:
+			status = '(Loading) ' + status
+		self.printStatus(status)
+
+	def printConnecting(self, server):
+		status = ('Connecting to homeserver %(homeserver)s...' %
+			{'homeserver': str(server)})
+		self.printStatus(status)
+
+	def printLoggingIn(self, username, server):
+		status = ('Logging in as %(username)s on %(homeServer)s...' % 
+			{'username': str(username),
+			'homeServer': server})
+		self.printStatus(status)
+
+	def printJoining(self, roomId):
+		status = ('Joining %(roomId)s...' % 
+			{'roomId': roomId})
+		self.printStatus(status)

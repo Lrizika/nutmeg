@@ -20,9 +20,10 @@ class Parser:
 			controller, 
 			mode:MODES = MODES.EDIT, 
 			stateManager = None,
-			displayController = None, 
-			inputBox = None):
+			displayController = None):
 		
+		self.listening = False
+
 		self.controller = controller
 		self.mode = mode
 
@@ -30,8 +31,6 @@ class Parser:
 		self.stateManager = stateManager
 		if displayController is None: displayController = stateManager.displayController
 		self.displayController = displayController
-		if inputBox is None: inputBox = displayController.inputBox
-		self.inputBox = inputBox
 
 		self.commands = CommandSelector.commands
 	
@@ -71,7 +70,20 @@ class Parser:
 			parse_logger.warning('Invalid command string: '+text)
 			output = EventBuilder.commandError(command, 'Unknown command.')
 
-		self.controller.printResult(output)
+		if output != {}:
+			self.controller.printResult(output)
+
+	def listen(self):
+		self.listening = True
+		while self.listening:
+			if self.mode is MODES.EDIT:
+				out = self.displayController.inputBox.textbox.edit(self.getListener())
+				self.displayController.clearInput()
+				self.parse(out)
+			elif self.mode is MODES.VISUAL:
+				key = self.displayController.screen.getkey()
+				self.visualParser(key)
+			
 
 	def editListener(self, keystroke: int) -> int:
 		"""
@@ -97,18 +109,19 @@ class Parser:
 		elif keystroke in [curses.KEY_HOME, 27]:
 			# Home or Escape. Both are accepted as Esc has some unusual behaviours in curses.
 			self.setMode(MODES.VISUAL)
+			return(7) # Send a Ctrl-G so we quit editing
 
 		# TODO: Decide whether we want to use page up/down for scrolling in-Textpad or in chat
 		elif keystroke == curses.KEY_PPAGE:
 			self.stateManager.pageUp()
 		elif keystroke == curses.KEY_NPAGE:
-			self.stateManager.pageUp()
+			self.stateManager.pageDown()
 
 		return(keystroke)
 
-	def visualListener(self, keystroke: int):
+	def visualParser(self, keystroke: int):
 		"""
-		Visual-mode listener function, called on each keystroke while in visual mode
+		Visual-mode parser function, called on each keystroke while in visual mode
 			TODO: Build this
 		
 		Args:
@@ -136,7 +149,7 @@ class Parser:
 		if mode is MODES.EDIT:
 			return(self.editListener)
 		elif mode is MODES.VISUAL:
-			return(self.visualListener)
+			return(self.visualParser)
 		else:
 			raise InvalidModeError('Tried to get listener for invalid mode: '+str(mode))
 

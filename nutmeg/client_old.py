@@ -289,7 +289,7 @@ class StatusDisplay:
 			'roomName': str(room.display_name),
 			'topic': str(topic)})
 		if loading is True:
-			status += ' (Loading...)'
+			status = '(Loading) ' + status
 		self.printStatus(status)
 
 	def printConnecting(self, server):

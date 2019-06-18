@@ -33,6 +33,8 @@ def startLog(file):
 
 def main(screen):
 	app_log = startLog(LOGFILE)
+	screen.addstr(0,0,'Loading Nutmeg...')
+	screen.refresh()
 
 	with open('testuser-password', 'r') as passFile:
 		PASSWORD = passFile.read().strip()
@@ -43,10 +45,12 @@ def main(screen):
 	controller = Controller(screen, HOMESERVER, username=USERNAME, password=PASSWORD)
 	inputParser = Parser(controller)
 	controller.stateManager.joinRoom(ROOMNAME)
-	while(True):
-		out = inputParser.inputBox.textbox.edit(inputParser.getListener())
-		inputParser.inputBox.clear()
-		inputParser.parse(out)
+
+	inputParser.listen()
+	# while(True):
+	# 	out = inputParser.displayController.inputBox.textbox.edit(inputParser.getListener())
+	# 	inputParser.displayController.inputBox.clear()
+	# 	inputParser.parse(out)
 
 if __name__ == '__main__':
 	curses.wrapper(main)

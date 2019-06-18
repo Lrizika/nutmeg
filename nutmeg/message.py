@@ -46,6 +46,7 @@ class Message:#(ChatObject):
 
 		self.room = room
 		self.event = event
+		self.width = None
 
 	def build(self, width:int) -> textpad.Textbox:
 		"""
@@ -58,11 +59,14 @@ class Message:#(ChatObject):
 			textpad.Textbox: Textpad of the message.
 				You should call textpad.refresh on this (or on self.pad later)
 		"""
-
-		self.width = width
-		self.height = self.MAXLEN // width + 1
-		self.pad = curses.newpad(self.height, self.width)
-		self.constructPad()
+		if self.width != width:
+			self.width = width
+			self.height = self.MAXLEN // width + 1
+			self.pad = curses.newpad(self.height, self.width)
+			try:
+				self.constructPad()
+			except Exception as e:
+				message_logger.error('Error in constructPad: '+str(e)+'; Event being built: '+str(self.event))
 		return(self.pad)
 
 	@staticmethod

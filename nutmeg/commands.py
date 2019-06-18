@@ -47,6 +47,21 @@ class Join(Command):
 		controller.stateManager.joinRoom(args[0])
 		return('Joined '+args[0])
 
+class Emote(Command):
+	command = 'emote'
+	aliases = ['me', 'em']
+	def validate(self, args):
+		if len(args) < 1:
+			raise IndexError('You need to emote something!')
+	@staticmethod
+	def help():
+		return("""Usage: /emote something
+			Send an emote message
+			Aliases: /me, /em""")
+	def execute(self, controller, args):
+		controller.stateManager.sendEmote(' '.join(args))
+		return({})
+
 class Whoami(Command):
 	command = 'whoami'
 	def validate(self, args):
@@ -64,7 +79,7 @@ class Help(Command):
 	aliases = ['h', '?']
 	def validate(self, args):
 		if len(args) > 1:
-			raise IndexError('Help requires no more than one argument (hint: try /help).')
+			raise IndexError('Help requires no more than one argument (hint: try /help help).')
 	@staticmethod
 	def help():
 		return("""Usage: /help [command]
@@ -75,7 +90,24 @@ class Help(Command):
 			command = self.command
 		else:
 			command = args[0]
-		return(CommandSelector.commands[command].help())
+		if command in CommandSelector.commands:
+			return(CommandSelector.commands[command].help())
+		else:
+			raise ValueError('Unknown command "%(command)s", try /commands' %
+				{'command': str(command)})
+
+class Commands(Command):
+	command = 'commands'
+	def validate(self, args):
+		if len(args) != 0:
+			raise IndexError('Commands requires zero arguments (hint: try /help [command]).')
+	@staticmethod
+	def help():
+		return("""Usage: /commands
+			List available commands.
+			For more info on each command, try /help""")
+	def execute(self, controller, args):
+		return(str([descendant.command for descendant in descendants(Command)]))
 
 class CommandSelector:
 	commands = {descendant.command:descendant for descendant in descendants(Command)}
