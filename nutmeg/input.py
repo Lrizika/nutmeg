@@ -59,7 +59,7 @@ class Parser:
 
 		parse_logger.info('Parsing input as command: '+text)
 		split = text.split(' ')
-		command = split[0][1:]
+		command = split[0][1:].lower()
 		args = []
 		if len(split) > 1:
 			args = split[1:]

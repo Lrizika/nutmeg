@@ -89,7 +89,7 @@ class Help(Command):
 		if len(args) == 0:
 			command = self.command
 		else:
-			command = args[0]
+			command = args[0].lower()
 		if command in CommandSelector.commands:
 			return(CommandSelector.commands[command].help())
 		else:
@@ -110,6 +110,6 @@ class Commands(Command):
 		return(str([descendant.command for descendant in descendants(Command)]))
 
 class CommandSelector:
-	commands = {descendant.command:descendant for descendant in descendants(Command)}
-	commands.update({alias:descendant for descendant in descendants(Command) for alias in descendant.aliases})
+	commands = {descendant.command.lower():descendant for descendant in descendants(Command)}
+	commands.update({alias.lower():descendant for descendant in descendants(Command) for alias in descendant.aliases})
 	command_logger.info('Loaded commands, CommandSelector.commands = '+str(commands))
