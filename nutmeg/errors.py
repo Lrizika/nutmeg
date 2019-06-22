@@ -25,7 +25,7 @@ class InvalidModeError(StateError):
 
 class WrongModeError(StateError):
 	"""
-	Raised when the input.Parser processes input in the wrong mode.
+	Raised when the input.InputController processes input in the wrong mode.
 		E.G. receives edit input for processing while in visual mode.
 		This should never happen.
 	"""

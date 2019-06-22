@@ -128,7 +128,11 @@ class Message:#(ChatObject):
 		
 		if colour is None: colour = self.senderColour
 		if pad is None: pad = self.pad
-		sender = getMember(self.room, self.event['sender']).displayname
+		try:
+			sender = getMember(self.room, self.event['sender']).displayname
+		except Exception as e:
+			message_logger.error('Exception in printSender: '+str(e))
+			sender = self.event['sender']
 		if append is not None: sender += append
 		pad.addstr(sender, colour)
 		return(pad)
@@ -359,6 +363,426 @@ class CanonicalAlias(StateEvent):
 		self.printSender(append=' ')
 		self.printGeneric(message, colour=self.senderColour)
 
+class RoomCreate(StateEvent):
+	"""
+	Defined in:
+		Client-Server API: 9.3.3 m.room.create
+		https://matrix.org/docs/spec/client_server/r0.5.0#id285
+
+	Output style:
+		Timestamp - Sender created the room.
+	"""
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'type': 'm.room.create',
+			'content': {
+				'creator': str
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' ')
+		self.printGeneric('created the room.', colour=self.senderColour)
+
+class JoinRules(StateEvent):
+	"""
+	Defined in:
+		Client-Server API: 9.3.4 m.room.join_rules
+		https://matrix.org/docs/spec/client_server/r0.5.0#id286
+
+	Output style:
+		Timestamp - Sender set the room to Join Rule.
+	"""
+
+	# joinTypes = ['public','invite','knock','private']
+	joinTypes = {'public': 'public',
+	'invite': 'invite-only',
+	'knock': 'unknown',
+	'private': 'private'}
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'type': 'm.room.join_rules',
+			'content': {
+				'join_rule': str
+			}
+		}
+		return(checkStructure(event, structure) and event['content']['join_rule'] in JoinRules.joinTypes)
+
+	
+	def constructPad(self):
+		message = ('set the room to %(joinType)s.' %
+			{'joinType':self.joinTypes[self.event['content']['join_rule']]})
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class RoomMember(StateEvent):
+	"""
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style:
+		Timestamp - Sender changed State_Key's membership status to Membership.
+	"""
+
+	membershipTypes = ['invite', 'join', 'ban', 'leave', 'knock']
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'type': 'm.room.member',
+			'content': {
+				'membership': str
+			}
+		}
+		return(checkStructure(event, structure) and event['content']['membership'] in RoomMember.membershipTypes)
+	
+	def constructPad(self):
+		stateKeyName = getMember(self.room, self.event['state_key']).displayname
+		message = ('changed %(stateKeyName)s\'s membership status to %(membership)s.' %
+			{'stateKeyName': stateKeyName, 
+			'membership':str(self.event['content']['membership'])})
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class MemberJoin(RoomMember):
+	"""
+	For membership = join
+
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style: One of:
+		Timestamp - Sender joined the room.
+		Timestamp - OldName changed their display name to NewName.
+		Timestamp - Sender changed their avatar.
+	"""
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'content': {
+				'membership': 'join'
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		self.printOriginTs(append=' - ')
+		if 'prev_content' in self.event and self.event['prev_content']['membership'] == 'join':
+			if self.event['prev_content']['displayname'] != self.event['content']['displayname']:
+				message = ('%(oldName)s changed their display name to %(newName)s.' %
+					{'oldName': self.event['prev_content']['displayname'],
+					'newName': self.event['content']['displayname']})
+				self.printGeneric(message, colour=self.senderColour)
+			else:
+				self.printSender(append=' changed their avatar.')
+		else:
+			self.printSender(append=' joined the room.')
+
+class MemberInvite(RoomMember):
+	"""
+	For membership = invite
+		Note that the message is blank if previous membership state was invite
+
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style:
+		Timestamp - Sender invited State_Key to the room.
+	"""
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'content': {
+				'membership': 'invite'
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		if 'prev_content' in self.event and self.event['prev_content']['membership'] == 'invite': return
+
+		message = ('invited %(stateKey)s to the room.' %
+			{'stateKey': self.event['state_key']})
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class MemberLeave(RoomMember):
+	"""
+	For membership = leave
+
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style:
+		Timestamp - State_Key left the room.
+	"""
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'content': {
+				'membership': 'leave'
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		message = ('%(stateKey)s left the room.' %
+			{'stateKey': self.event['state_key']})
+		self.printOriginTs(append=' - ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class MemberLeaveToLeave(MemberLeave):
+	"""
+	For membership = leave and previous membership = leave
+
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style:
+		None
+	"""
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'prev_content': {
+				'membership': 'leave'
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self): pass
+
+class MemberUnban(MemberLeave):
+	"""
+	For membership = leave and previous membership = ban
+
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style:
+		Timestamp - Sender unbanned State_Key.
+	"""
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'prev_content': {
+				'membership': 'ban'
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		message = ('unbanned %(stateKey)s.' %
+			{'stateKey': self.event['state_key']})
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class MemberUninvite(MemberLeave):
+	"""
+	For membership = leave and previous membership = invite
+
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style:
+		Timestamp - Sender rescinded the invitation to State_Key.
+	"""
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'prev_content': {
+				'membership': 'invite'
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		message = ('rescinded the invitation to %(stateKey)s.' %
+			{'stateKey': self.event['state_key']})
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class MemberKicked(MemberLeave):
+	"""
+	For membership = leave and previous membership = join and state_key != sender
+
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style:
+		Timestamp - Sender kicked State_Key.
+	"""
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'prev_content': {
+				'membership': 'join'
+			}
+		}
+		if event['state_key'] == event['sender']: return(False)
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		message = ('kicked %(stateKey)s.' %
+			{'stateKey': self.event['state_key']})
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class MemberBan(RoomMember):
+	"""
+	For membership = ban
+
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style:
+		Timestamp - Sender banned State_Key.
+	"""
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'content': {
+				'membership': 'ban'
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		message = ('banned %(stateKey)s' %
+			{'stateKey': self.event['state_key']})
+		self.printOriginTs(append=' - ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class MemberKickBan(MemberBan):
+	"""
+	For membership = ban and previous membership = join
+
+	Defined in:
+		Client-Server API: 9.3.5 m.room.member
+		https://matrix.org/docs/spec/client_server/r0.5.0#id287
+
+	Output style:
+		Timestamp - Sender kicked and banned State_Key.
+	"""
+
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'prev_content': {
+				'membership': 'join'
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		message = ('kicked and banned %(stateKey)s' %
+			{'stateKey': self.event['state_key']})
+		self.printOriginTs(append=' - ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class PowerLevels(StateEvent):
+	"""
+	Defined in:
+		Client-Server API: 9.3.6 m.room.power_levels
+		https://matrix.org/docs/spec/client_server/r0.5.0#id288
+
+	Output style:
+		Timestamp - Sender changed the room's power levels.
+	"""
+	# TODO: Consider adding more info here
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'type': 'm.room.power_levels'
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' changed the room\'s power levels.')
+
+class RoomRedaction(RoomEvent): 
+	"""
+	Defined in:
+		Client-Server API: 9.3.7 m.room.redaction
+		https://matrix.org/docs/spec/client_server/r0.5.0#id289
+
+	Output styles:
+		Timestamp - Sender redacted event Event_Id.
+		Timestamp - Sender redacted event Event_Id for reason: Reason.
+	"""
+	# TODO: Consider adding more info here
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'type': 'm.room.redaction',
+			'redacts': str
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		if 'content' in self.event and 'reason' in self.event['content']:
+			message = ('redacted event %(redacts)s for reason: %(reason)s.' %
+			{'redacts': self.event['redacts'],
+			'reason': str(self.event['content']['reason'])})
+		else:
+			message = ('redacted event %(redacts)s.' %
+				{'redacts': self.event['redacts']})
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' ')
+		self.printGeneric(message, colour=self.senderColour)
+
+class RedactedEvent(RoomEvent):
+	"""
+	Class for redacted events. These are built to replace events which have been redacted.
+
+	Output style:
+		Timestamp - Sender: [REDACTED BY EVENT Redacted_By]
+	"""
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'unsigned': {
+				'redacted_because': {
+					'event_id': str
+				}
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		self.printOriginTs(append=' - ')
+		self.printSender(append=': [REDACTED BY EVENT %(redactedBy)s]' %
+			{'redactedBy': self.event['unsigned']['redacted_because']['event_id']})
+
 class RoomName(StateEvent):
 	"""
 	Defined in:
@@ -381,6 +805,32 @@ class RoomName(StateEvent):
 	def constructPad(self):
 		message = ('changed the room name to %(name)s.' %
 			{'name':str(self.event['content']['name'])})
+		self.printOriginTs(append=' - ')
+		self.printSender(append=' ')
+		self.printGeneric(message, colour=self.senderColour)
+	
+class RoomTopic(StateEvent):
+	"""
+	Defined in:
+		Client-Server API: 13.2.1.4 m.room.topic
+		https://matrix.org/docs/spec/client_server/r0.5.0#id365
+
+	Output style:
+		Timestamp - Sender changed the room's topic to Topic
+	"""
+	@staticmethod
+	def checkEventType(event:dict) -> bool:
+		structure = {
+			'type': 'm.room.topic',
+			'content': {
+				'topic': str
+			}
+		}
+		return(checkStructure(event, structure))
+	
+	def constructPad(self):
+		message = ('changed the room\'s topic to %(topic)s.' %
+			{'topic':str(self.event['content']['topic'])})
 		self.printOriginTs(append=' - ')
 		self.printSender(append=' ')
 		self.printGeneric(message, colour=self.senderColour)

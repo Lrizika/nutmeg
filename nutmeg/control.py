@@ -26,7 +26,14 @@ class Controller:
 
 		self.displayController.statusDisplay.printLoggingIn(self.username, self.homeserver)
 		if username is None or password is None: self.promptLogin(username=username)
-		else: self.client.login_with_password(username=self.username, password=self.password)
+		else: 
+			success = False
+			while not success:
+				try:
+					self.client.login_with_password(username=self.username, password=self.password)
+					success = True
+				except Exception as e:
+					control_logger.error('Exception while logging in, retrying...: '+str(e))
 		
 
 		self.eventQueue = EventQueue()
@@ -97,9 +104,21 @@ class StateManager:
 
 	def joinRoom(self, roomId:str):
 		self.displayController.statusDisplay.printJoining(roomId)
-		if roomId in self.rooms: room = self.rooms[roomId]
-		elif roomId in self.client.rooms: room = self.client.rooms[roomId]
+		control_logger.info('Current rooms: '+str(self.rooms))
+		control_logger.info('Checking to see if room is known: '+roomId)
+		for knownRoom in self.rooms:
+			# Check if we're joining an alias of an already-known room
+			self.rooms[knownRoom].update_aliases()
+			if roomId in self.rooms[knownRoom].aliases:
+				roomId = knownRoom
+		if roomId in self.rooms: 
+			control_logger.info('Joining known room: '+roomId)
+			room = self.rooms[roomId]
+		elif roomId in self.client.rooms: 
+			control_logger.info('Joining known room: '+roomId)
+			room = self.client.rooms[roomId]
 		else:
+			control_logger.info('Joining new room: '+roomId)
 			room = self.client.join_room(roomId)
 			self.rooms[roomId] = room
 			

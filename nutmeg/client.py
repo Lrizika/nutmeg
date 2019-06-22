@@ -1,10 +1,10 @@
 #!/usr/bin/python36
 try:
 	from .control import Controller
-	from .input import Parser
+	from .input import InputController
 except ImportError:
 	from control import Controller
-	from input import Parser
+	from input import InputController
 from matrix_client.client import MatrixClient, CACHE
 from matrix_client.errors import MatrixHttpLibError
 import curses
@@ -16,7 +16,7 @@ from logging.handlers import RotatingFileHandler
 LOGFILE = 'logs/nutmeg.log'
 
 def startLog(file):
-	log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(funcName)s(%(lineno)d) %(message)s')
+	log_formatter = logging.Formatter('%(asctime)s %(levelname)s %(filename)s:%(funcName)s(%(lineno)d) %(message)s')
 
 	my_handler = RotatingFileHandler(file, mode='a', maxBytes=1*1024*1024, 
 									backupCount=10, encoding=None, delay=0)
@@ -43,14 +43,14 @@ def main(screen):
 	ROOMNAME = '#test4:lrizika.com'
 	app_log.info('Building Controller...')
 	controller = Controller(screen, HOMESERVER, username=USERNAME, password=PASSWORD)
-	inputParser = Parser(controller)
+	inputController = InputController(controller)
 	controller.stateManager.joinRoom(ROOMNAME)
 
-	inputParser.listen()
+	inputController.listen()
 	# while(True):
-	# 	out = inputParser.displayController.inputBox.textbox.edit(inputParser.getListener())
-	# 	inputParser.displayController.inputBox.clear()
-	# 	inputParser.parse(out)
+	# 	out = inputController.displayController.inputBox.textbox.edit(inputController.getListener())
+	# 	inputController.displayController.inputBox.clear()
+	# 	inputController.parse(out)
 
 if __name__ == '__main__':
 	curses.wrapper(main)

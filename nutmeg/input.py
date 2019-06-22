@@ -15,7 +15,7 @@ import curses
 import logging
 parse_logger = logging.getLogger('root')
 
-class Parser:
+class InputController:
 	def __init__(self, 
 			controller, 
 			mode:MODES = MODES.EDIT, 
@@ -82,7 +82,7 @@ class Parser:
 				self.parse(out)
 			elif self.mode is MODES.VISUAL:
 				key = self.displayController.screen.getkey()
-				self.visualParser(key)
+				self.visualInputController(key)
 			
 
 	def editListener(self, keystroke: int) -> int:
@@ -119,7 +119,7 @@ class Parser:
 
 		return(keystroke)
 
-	def visualParser(self, keystroke: int):
+	def visualInputController(self, keystroke: int):
 		"""
 		Visual-mode parser function, called on each keystroke while in visual mode
 			TODO: Build this
@@ -149,13 +149,13 @@ class Parser:
 		if mode is MODES.EDIT:
 			return(self.editListener)
 		elif mode is MODES.VISUAL:
-			return(self.visualParser)
+			return(self.visualInputController)
 		else:
 			raise InvalidModeError('Tried to get listener for invalid mode: '+str(mode))
 
 	def setMode(self, mode:MODES):
 		"""
-		Change the Parser and Display mode.
+		Change the InputController and Display mode.
 		
 		Args:
 			mode (MODES): Mode to change to

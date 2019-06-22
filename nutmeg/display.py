@@ -1,12 +1,12 @@
 try:
 	from .utils import tsToDt, getMember, descendants, getLastChar2
 	from .constants import MTYPE, MODES
-	from .message import MessageBuilder, Message
+	from .message import MessageBuilder, Message, RoomRedaction, RedactedEvent
 	from .errors import InvalidModeError
 except ImportError:
 	from utils import tsToDt, getMember, descendants, getLastChar2
 	from constants import MTYPE, MODES
-	from message import MessageBuilder, Message
+	from message import MessageBuilder, Message, RoomRedaction, RedactedEvent
 	from errors import InvalidModeError
 import curses, _curses
 import matrix_client.room
@@ -34,6 +34,8 @@ class MessageQueues:
 		"""
 
 		message = MessageBuilder.initMessage(event, room)
+		if isinstance(message, RoomRedaction):
+			self.redact(event, room)
 		self.enqueue(message, room)
 
 	def enqueue(self, message:Message, room:matrix_client.room.Room):
@@ -49,7 +51,33 @@ class MessageQueues:
 		display_logger.debug('Queueing Message to room %(roomId)s: %(message)s' %
 			{'roomId':room.room_id,
 			'message':str(message)})
+
 		self.queues[room.room_id].insert(0, message)
+
+
+	def redact(self, event:dict, room:matrix_client.room.Room):
+		"""
+		Redact a Message from a room.
+		
+		Args:
+			event (dict): Event of the redaction. Note that this is *NOT* the event being redacted.
+			room (matrix_client.room.Room): Room in which to perform the redaction.
+		"""
+
+		for message in self.queues[room.room_id]:
+			if message.event['event_id'] == event['redacts']:
+				redactedEvent = {
+					'event_id': message.event['event_id'],
+					'sender': message.event['sender'],
+					'origin_server_ts': message.event['origin_server_ts'],
+					'unsigned': {
+						'redacted_because': {
+							'event_id': event['event_id']
+						}
+					}
+				}
+				message = RedactedEvent(redactedEvent, room)
+				return
 
 
 	def sortQueue(self, room:matrix_client.room.Room):
@@ -93,7 +121,7 @@ class DisplayController:
 			self.inputBox.clear()
 			self.buildWindows(inputHeight=0)
 
-		self.changeOffset(0)
+		#self.changeOffset(0)
 
 	def clearInput(self):
 		if self.inputBox is not None:
@@ -272,7 +300,10 @@ class StatusDisplay:
 		self.screen.refresh()
 	
 	def printRoomHeader(self, room, loading=False):
+		room.update_room_topic()
+		room.update_room_name()
 		topic = room.topic
+		display_logger.info('Topic: '+str(topic))
 		if not topic: topic = '(No topic)'
 		#if len(topic) > 23: topic = topic[:20] + '...'
 		status = ('%(user)s - %(roomName)s - %(topic)s' %
